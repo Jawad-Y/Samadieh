@@ -169,4 +169,4 @@ Security & operational notes
 - The database trigger updates `pools.total_amount` whenever a `pool_contributions` row is inserted. The API returns the updated pool after insert.
 
 File reference
-- Server routes implemented in `server/src/routes/pools.js` and supabase RPC in `supabase/migrations/20260508_000002_join_pool_rpc.sql`.
+- Server routes implemented in `server/src/routes/pools.js` and supabase RPC in `supabase/migrations/20260508122902_join_pool_rpc.sql`.
