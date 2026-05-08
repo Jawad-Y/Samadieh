@@ -1,7 +1,20 @@
 import express from 'express';
+import multer from 'multer';
+import path from 'path';
 import { supabaseAdmin, getUserFromAuthHeader } from '../supabaseClient.js';
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+function sanitizeFileName(fileName) {
+  return path
+    .basename(fileName)
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_+/g, '_');
+}
 
 function requireAuth(fn) {
   return async (req, res, next) => {
@@ -14,6 +27,12 @@ function requireAuth(fn) {
       next(err);
     }
   };
+}
+
+async function loadPoolById(poolId) {
+  const { data, error } = await supabaseAdmin.from('pools').select('*').eq('id', poolId).maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
 // Create pool (authenticated)
@@ -46,24 +65,6 @@ router.get('/mine', requireAuth(async (req, res, next) => {
   }
 }));
 
-// Get pool by id (owner or published)
-router.get('/:id', async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { data: pool } = await supabaseAdmin.from('pools').select('*').eq('id', id).maybeSingle();
-    if (!pool) return res.status(404).json({ error: 'Pool not found' });
-
-    if (pool.status === 'published') return res.json(pool);
-
-    // If not published, require auth and ownership
-    const user = await getUserFromAuthHeader(req.headers.authorization || '');
-    if (!user || user.id !== pool.owner_id) return res.status(403).json({ error: 'Forbidden' });
-    res.json(pool);
-  } catch (err) {
-    next(err);
-  }
-});
-
 // Public: get pool by share token (published only)
 router.get('/share/:shareToken', async (req, res, next) => {
   try {
@@ -85,11 +86,9 @@ router.post('/share/:shareToken/join', async (req, res, next) => {
 
     if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'amount must be > 0' });
 
-    // find published pool
     const { data: pool } = await supabaseAdmin.from('pools').select('*').eq('share_token', shareToken).eq('status', 'published').maybeSingle();
     if (!pool) return res.status(404).json({ error: 'Published pool not found' });
 
-    // optional user
     let user = null;
     try { user = await getUserFromAuthHeader(req.headers.authorization || ''); } catch (e) { /* ignore */ }
 
@@ -104,11 +103,84 @@ router.post('/share/:shareToken/join', async (req, res, next) => {
     const { data: contribution, error: insertErr } = await supabaseAdmin.from('pool_contributions').insert(insertPayload).select().single();
     if (insertErr) throw insertErr;
 
-    // fetch updated pool
     const { data: updatedPool, error: poolErr } = await supabaseAdmin.from('pools').select('*').eq('id', pool.id).maybeSingle();
     if (poolErr) throw poolErr;
 
     res.json({ contribution, pool: updatedPool });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Upload or replace a pool photo (authenticated owner only)
+router.post('/:id/photo', async (req, res, next) => {
+  try {
+    const user = await getUserFromAuthHeader(req.headers.authorization || '');
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    upload.single('photo')(req, res, async (uploadErr) => {
+      try {
+        if (uploadErr) return next(uploadErr);
+        const { id } = req.params;
+        const pool = await loadPoolById(id);
+        if (!pool) return res.status(404).json({ error: 'Pool not found' });
+        if (pool.owner_id !== user.id) return res.status(403).json({ error: 'Forbidden' });
+
+        const file = req.file;
+        if (!file) return res.status(400).json({ error: 'photo file is required' });
+        if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+          return res.status(400).json({ error: 'Only image files are allowed' });
+        }
+
+        const safeName = sanitizeFileName(file.originalname || 'pool-photo');
+        const storagePath = `pools/${pool.id}/${Date.now()}-${safeName}`;
+
+        const { error: uploadStorageError } = await supabaseAdmin.storage
+          .from('pool-photos')
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: true,
+          });
+
+        if (uploadStorageError) throw uploadStorageError;
+
+        const { data: publicUrlData } = supabaseAdmin.storage.from('pool-photos').getPublicUrl(storagePath);
+
+        const { data: updatedPool, error: updateError } = await supabaseAdmin
+          .from('pools')
+          .update({
+            photo_path: storagePath,
+            photo_url: publicUrlData.publicUrl,
+          })
+          .eq('id', pool.id)
+          .select('*')
+          .single();
+
+        if (updateError) throw updateError;
+
+        res.json({ pool: updatedPool, photo_url: publicUrlData.publicUrl, photo_path: storagePath });
+      } catch (err) {
+        next(err);
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Get pool by id (owner or published)
+router.get('/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { data: pool } = await supabaseAdmin.from('pools').select('*').eq('id', id).maybeSingle();
+    if (!pool) return res.status(404).json({ error: 'Pool not found' });
+
+    if (pool.status === 'published') return res.json(pool);
+
+    // If not published, require auth and ownership
+    const user = await getUserFromAuthHeader(req.headers.authorization || '');
+    if (!user || user.id !== pool.owner_id) return res.status(403).json({ error: 'Forbidden' });
+    res.json(pool);
   } catch (err) {
     next(err);
   }

@@ -45,6 +45,8 @@ Example response:
     "created_at": "2026-05-08T10:00:00.000Z",
     "updated_at": "2026-05-08T10:05:00.000Z",
     "published_at": "2026-05-08T10:00:00.000Z",
+    "photo_url": "https://...",
+    "photo_path": "pools/.../photo.jpg",
     "progress_percent": "0.25",
     "remaining_amount": "99750.00"
   }
@@ -58,6 +60,8 @@ Fields description (from `public_pools` view)
 - `status`: `published` for public pools
 - `goal_amount`: always 100000.00
 - `total_amount`: current aggregated total
+- `photo_url`: public URL for the pool image, if uploaded
+- `photo_path`: storage path for the uploaded image
 - `progress_percent`: percent towards goal (0-100)
 - `remaining_amount`: goal - total
 
@@ -157,6 +161,27 @@ Example response:
 Errors:
 - 400: missing or invalid `amount`
 - 404: `Published pool not found` when share token invalid or pool not published
+
+**POST /api/pools/:id/photo**
+- Description: Upload or replace the image for a pool. Owner only.
+- Auth: required — `Authorization: Bearer <access_token>`
+- Content-Type: `multipart/form-data`
+- Form field: `photo` (image file)
+- Limits: image only, up to 5 MB
+- Response 200:
+
+```
+{
+  "pool": { "...": "updated pool row including photo_url and photo_path" },
+  "photo_url": "https://...",
+  "photo_path": "pools/<pool-id>/<timestamp>-file.jpg"
+}
+```
+- Errors:
+  - 400: missing photo file or non-image upload
+  - 401: unauthorized
+  - 403: not pool owner
+  - 404: pool not found
 
 Client usage notes
 - Auth: Use Supabase client in the frontend to sign users in. Pass the returned `access_token` as `Authorization: Bearer <token>` when calling protected endpoints.
